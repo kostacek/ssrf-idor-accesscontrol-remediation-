@@ -13,45 +13,156 @@ This project implements three major fixes:
 3. **Access‑Control Enhancement** – Extends Apache Shiro configuration with a new role and permissions.
 
 ---
+## 🧨 1. Server-Side Request Forgery (SSRF)
 
-## 🔐 1. Fixing the SSRF Vulnerability
-**Issue:** The backend fetched user‑supplied URLs without validation, allowing internal resource access (e.g., `file:///etc/passwd`, `http://169.254.169.254`).  
-**Fix:**  
-- Implemented strict URL parsing and scheme validation (`http`/`https` only).  
-- Added host allowlisting (`api.internal.example.com`, `images.example.com`).  
-- Disabled automatic redirects in the HTTP client.  
-- Applied network‑layer restrictions to block internal endpoints.
+### 📖 Description
+SSRF occurs when an application fetches a user-supplied URL without validation, allowing attackers to access internal services, metadata endpoints, or local files.
 
 ---
 
-## 🧠 2. Fixing IDOR and Access‑Control Vulnerabilities
-**Issue:** Users could manipulate identifiers in URLs to access other users’ data or performance records.  
-**Fix:**  
-- Derived the current user from session context instead of trusting request parameters.  
-- Queried objects through user‑scoped repositories (`findByIdAndUser`).  
-- Implemented authorization checks before returning sensitive data.
+### ✔ Vulnerable Code
+
+```java
+@GetMapping("/fetch")
+@ResponseBody
+public String fetchRemote(@RequestParam String url) {
+    return restTemplate.getForObject(url, String.class);
+}
+---
+```
+💥 Exploit Example
+
+An attacker modifies the request:
+```java
+http://localhost:8080/actuator
+file:///etc/passwd
+```
+
+### 🖼️ Vulnerability
+![SSRF Vulnerability Screenshot](image/SSRF_Vunerability.png)
+
+🔎 Risk Impact
+Severity: Critical
+Risk: Internal network access
+Impact: Exposure of system files, cloud metadata, and internal APIs
+---
+🛡️ Remediation
+
+```java
+URI uri = new URI(url);
+
+// Only allow HTTP/HTTPS
+if (!"http".equalsIgnoreCase(uri.getScheme()) &&
+    !"https".equalsIgnoreCase(uri.getScheme())) {
+    throw new IllegalArgumentException("Unsupported scheme");
+}
+
+// Allowlist trusted hosts
+Set<String> allowedHosts = Set.of(
+    "api.internal.example.com",
+    "images.example.com"
+);
+
+String host = uri.getHost();
+if (host == null || !allowedHosts.contains(host.toLowerCase())) {
+    throw new IllegalArgumentException("Untrusted host");
+}
+
+return restTemplate.getForObject(uri, String.class);
+```
+![SSRF fix Screenshot](image/SSRF_fix.png)
+🧨 2. Insecure Direct Object Reference (IDOR)
+📖 Description
+
+IDOR allows attackers to access unauthorized data by manipulating identifiers in requests (e.g., changing id values).
+
+✔ Vulnerable Code
+@GetMapping("/profile")
+@ResponseBody
+public Customer getProfile(@RequestParam String id) {
+    return repository.findById(Integer.parseInt(id));
+}
+
+💥 Exploit Example
+```java
+/profile?id=886460
+```
+➡️ Returns another user's data
+
+🖼️ Vulnerability Evidence
+![IDOR Vulnerability Screenshot](image/IDOR_Vulnerability.png)
+
+🔎 Risk Impact
+Severity: High
+Risk: Unauthorized data access
+Impact: Exposure of personal and sensitive information
 
 ---
 
-## ⚙️ 3. Apache Shiro Role Configuration
-**Objective:** Extend the Shiro configuration to include a new role and permissions.
+🛡️ Remediation
 
-### Added Role
-- **Role:** `49sd`  
-- **Permissions:**  
-  - `tesla:drive:*`  
-  - `winnebago:drive:*`
+```java
+@GetMapping("/profile")
+@ResponseBody
+public Customer getProfile(HttpServletRequest request) {
 
-### Added User
-- **User:** `billchu`  
-- **Role:** `49sd`
+    String loggedInEmail = (String) request.getSession()
+        .getAttribute("logged_in_customer");
 
-### Execution Result
-After running the Maven Quickstart sample:
-- `billchu` successfully authenticated.  
-- Shiro confirmed permissions for driving all Teslas and Winnebagos.  
-- Role‑based access control enforced exactly as defined in `shiro.ini`.
+    if (loggedInEmail == null) {
+        throw new UnauthorizedException();
+    }
 
+    return customerRepository.findByEmail(loggedInEmail)
+        .orElseThrow(() -> new NotFoundException());
+}
+```
 ---
 
-## 📂 Repository Structure
+🖼️ Remediation Result
+
+![IDOR fix Screenshot](image/IDOR_fix.png)
+
+---
+🧨 3. Apache Shiro Access Control (RBAC)
+📖 Description
+
+Role-Based Access Control (RBAC) ensures users only access resources permitted by their assigned roles.
+
+✔ Configuration Changes
+```java
+
+[users]
+billchu = password, 49sd
+
+[roles]
+49sd = tesla:drive:*, winnebago:drive:*
+```
+
+🖼️ Users Configuration
+
+![User section Screenshot](image/User_section.png)
+
+
+🖼️ Roles Configuration
+
+
+![Role section Screenshot](image/Role_section.png)
+
+
+🔎 Risk Impact
+Severity: Medium
+Risk: Misconfigured permissions
+Impact: Overprivileged or unauthorized access
+
+
+🧪 Execution
+```java
+mvn compile exec:java
+
+```
+
+
+🖼️ Output
+
+![Expected results Screenshot](image/Expected_Results.png)
